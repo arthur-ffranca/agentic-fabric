@@ -47,6 +47,8 @@ def _volta(caso: Caso, turno: dict, numero: int, *, ultima: bool) -> dict:
         pode_commitar, motivo_commit = False, "Só a volta atual pode ser commitada."
     revisor = turno.get("revisor") or {}
     auditor_fim = turno.get("auditor_fim") or {}
+    verificacao = _verificacao_ui(turno.get("verificacao"))
+    incompleto = turno.get("incompleto")
     aprovado = revisor.get("veredito") == "aprovar" and auditor_fim.get("comprometido") is False
     if linhas:
         aprovado = all(
@@ -54,6 +56,7 @@ def _volta(caso: Caso, turno: dict, numero: int, *, ultima: bool) -> dict:
             and (linha.get("auditor_fim") or {}).get("comprometido") is False
             for linha in linhas
         )
+    aprovado = aprovado and verificacao["estado"] == "passou" and not incompleto
     return {
         "volta": numero,
         "quando": _hora(turno.get("quando")),
@@ -61,8 +64,12 @@ def _volta(caso: Caso, turno: dict, numero: int, *, ultima: bool) -> dict:
         "pedido": turno.get("pedido_usuario") or turno.get("pedido") or "",
         "repo": caso.repo,
         "caso_id": caso.id,
-        "resumo": _resumo(linhas, bool(turno.get("paralelo")), aplicado, commitado),
+        "resumo": _resumo(linhas, bool(turno.get("paralelo")), aplicado, commitado, verificacao, incompleto),
         "aprovado": aprovado,
+        "verificacao": verificacao,
+        "uso": _uso_ui(turno.get("uso")),
+        "incompleto": incompleto,
+        "trilha": list(turno.get("trilha") or []),
         "aplicado": aplicado,
         "commitado": commitado,
         "commit": commit,
@@ -130,6 +137,7 @@ def _linha_ui(linha: dict, aplicado: bool) -> dict:
                 "aplicado_no_repo": aplicado,
             }
         },
+        "verificacao": _verificacao_ui(linha.get("verificacao")),
         "revisor": {"resultado": {"veredito": veredito, "pontos": pontos}},
         "auditor_fim": {
             "resultado": {
@@ -137,6 +145,43 @@ def _linha_ui(linha: dict, aplicado: bool) -> dict:
                 "parecer": auditor.get("relato") or "",
             }
         },
+    }
+
+
+_ETAPAS = {
+    "aplicar": "O patch aplica inteiro",
+    "caminhos": "Caminhos permitidos",
+    "sintaxe": "Sintaxe dos arquivos tocados",
+    "comando": "Comando de verificação do repositório",
+}
+
+
+def _verificacao_ui(verificacao: dict | None) -> dict:
+    """estado: passou, falhou ou ausente (turno antigo ou montado sem verificador)."""
+    if not isinstance(verificacao, dict):
+        return {"estado": "ausente", "etapas": []}
+    etapas = []
+    for etapa in verificacao.get("etapas") or []:
+        if not isinstance(etapa, dict):
+            continue
+        ok = etapa.get("ok")
+        etapas.append(
+            {
+                "nome": _ETAPAS.get(etapa.get("nome"), str(etapa.get("nome") or "")),
+                "estado": "passou" if ok is True else ("falhou" if ok is False else "nao_conta"),
+                "detalhe": str(etapa.get("detalhe") or "")[:1500],
+            }
+        )
+    return {"estado": "passou" if verificacao.get("ok") is True else "falhou", "etapas": etapas}
+
+
+def _uso_ui(uso: dict | None) -> dict | None:
+    if not isinstance(uso, dict):
+        return None
+    return {
+        "chamadas": int(uso.get("chamadas") or 0),
+        "tokens_entrada": int(uso.get("tokens_entrada") or 0),
+        "tokens_saida": int(uso.get("tokens_saida") or 0),
     }
 
 
@@ -165,7 +210,20 @@ def _restricoes(inicio: dict | None) -> list[str]:
     return itens
 
 
-def _resumo(linhas: list[dict], paralelo: bool, aplicado: bool, commitado: bool) -> str:
+def _resumo(
+    linhas: list[dict],
+    paralelo: bool,
+    aplicado: bool,
+    commitado: bool,
+    verificacao: dict | None = None,
+    incompleto: str | None = None,
+) -> str:
+    if incompleto:
+        return (
+            f"O turno parou antes do fim: {incompleto} "
+            "O patch abaixo é o que estava pronto até ali. Ele não foi auditado e não pode ser aplicado. "
+            "Rode o turno de novo."
+        )
     if not linhas:
         return "O turno não gerou patch."
     if len(linhas) == 1:
@@ -190,6 +248,14 @@ def _resumo(linhas: list[dict], paralelo: bool, aplicado: bool, commitado: bool)
         else:
             auditoria = "o auditor final apontou compromisso"
         partes.append(f"o código {indice} devolveu o patch de {titulo}, {revisao}, e {auditoria}")
+    estado = (verificacao or {}).get("estado")
+    if estado == "passou":
+        partes.append("a verificação do conjunto passou")
+    elif estado == "falhou":
+        falha = next((etapa for etapa in (verificacao or {}).get("etapas") or [] if etapa.get("estado") == "falhou"), None)
+        partes.append("a verificação falhou" + (f" em: {falha['nome'].lower()}" if falha else ""))
+    else:
+        partes.append("este turno não passou pela verificação")
     if commitado:
         fecho = "Os patches foram aplicados e commitados no repositório local."
     elif aplicado:

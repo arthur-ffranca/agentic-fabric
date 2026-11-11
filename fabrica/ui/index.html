@@ -85,6 +85,12 @@
     .step li { margin: 2px 0; }
     .stamp { display: inline-block; font-size: 11px; font-weight: 600; border-radius: 999px; padding: 3px 8px; margin-bottom: 8px; background: #f6efe8; color: var(--accent); }
     .stamp.ok { background: var(--ok-bg); color: var(--ok); }
+    .detalhe { display: block; color: var(--muted); font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px; }
+    .passos { display: flex; gap: 8px; flex-wrap: wrap; }
+    .rotulo { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin: 0 0 8px; }
+    @keyframes pulso { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+    .badge.vivo { animation: pulso 1.4s ease-in-out infinite; }
+    @media (prefers-reduced-motion: reduce) { .badge.vivo { animation: none; } }
     .perf-card, .resumo, .aviso { border-radius: 14px; padding: 16px; margin-bottom: 16px; }
     .acoes { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
     pre {
@@ -139,6 +145,15 @@
       <p class="sub caso" id="caso" hidden></p>
       <div class="erro" id="erro" hidden></div>
     </form>
+    <div class="aviso" id="token-box" hidden>
+      <label for="token">Token de acesso</label>
+      <div class="row">
+        <input id="token" type="password" autocomplete="off" spellcheck="false" />
+        <div class="botoes"><button type="button" id="token-ok">Entrar</button></div>
+      </div>
+      <p class="sub" style="margin-top:8px">Esta fábrica pede o token definido em FABRICA_TOKEN. Ele fica guardado só neste navegador.</p>
+    </div>
+    <div class="aviso" id="andamento" hidden></div>
     <div class="aviso" id="pergunta" hidden></div>
     <section class="voltas-wrap" id="voltas-wrap" hidden>
       <h2>Voltas do caso</h2>
@@ -148,6 +163,7 @@
     <div id="resultado" hidden>
       <div class="inicio" id="inicio"></div>
       <div class="linhas" id="linhas"></div>
+      <div id="conjunto"></div>
       <div class="perf-card">
         <h2>Performance, em paralelo</h2>
         <p class="sub" style="margin-bottom:12px">Isto não entra no patch. Se você escolher, a cadeia roda de novo nesta tela, como a próxima volta. Uma proposta por vez.</p>
@@ -160,6 +176,70 @@
     const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
     let estado = { caso_id: null, atual: null, historico: [], pergunta: null, repo: "" };
     let vista = null;
+    let token = "";
+    try { token = localStorage.getItem("fabrica_token") || ""; } catch (e) { token = ""; }
+    const ROTULOS = {
+      "auditor:inicio": "Auditor · início",
+      "codigo": "Código",
+      "verificador": "Verificação",
+      "revisor": "Revisor",
+      "auditor:fim": "Auditor · fim",
+    };
+
+    async function api(url, opcoes) {
+      const opts = opcoes || {};
+      const headers = Object.assign({}, opts.headers || {});
+      if (token) headers["Authorization"] = "Bearer " + token;
+      const r = await fetch(url, Object.assign({}, opts, { headers }));
+      let data = {};
+      try { data = await r.json(); } catch (e) { data = {}; }
+      if (r.status === 401) {
+        $("token-box").hidden = false;
+        throw new Error(data.erro || "Informe o token de acesso.");
+      }
+      return { r, data };
+    }
+
+    function milhares(n) {
+      return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(".", ",") + " mil" : String(n);
+    }
+
+    function cardVerificacao(ver, titulo) {
+      const v = ver || { estado: "ausente", etapas: [] };
+      const rotulo = v.estado === "passou" ? "Passou" : (v.estado === "falhou" ? "Falhou" : "Não rodou");
+      const stamp = `<div class="stamp ${v.estado === "passou" ? "ok" : ""}">${rotulo}</div>`;
+      const itens = (v.etapas || []).map((e) => {
+        const marca = e.estado === "passou" ? "ok" : (e.estado === "falhou" ? "falhou" : "não conta");
+        const detalhe = e.estado !== "passou" && e.detalhe ? `<span class="detalhe">${esc(e.detalhe)}</span>` : "";
+        return `<li>${esc(e.nome)}: ${marca}${detalhe}</li>`;
+      }).join("") || "<li>Este turno não passou pela verificação.</li>";
+      return cardPasso(titulo || "Verificação", "", `<ul>${itens}</ul>`, stamp);
+    }
+
+    function pintarAndamento(t) {
+      const box = $("andamento");
+      if (!t) { box.hidden = true; box.innerHTML = ""; return; }
+      box.hidden = false;
+      const passos = (t.passos || []).map((p) => `<span class="badge ok">${esc(ROTULOS[p] || p)}</span>`).join("");
+      box.innerHTML = `<p class="rotulo">Turno em andamento · ${Number(t.segundos || 0)} s</p>
+        <div class="passos">${passos}<span class="badge vivo">${passos ? "trabalhando…" : "lendo o repositório…"}</span></div>`;
+    }
+
+    async function acompanhar(id) {
+      for (;;) {
+        const { r, data } = await api("/api/trabalho?id=" + encodeURIComponent(id));
+        if (!r.ok) throw new Error(data.erro || "Perdi o acompanhamento do turno. Recarregue a página.");
+        if (data.estado === "rodando") {
+          pintarAndamento(data);
+          await new Promise((ok) => setTimeout(ok, 1200));
+          continue;
+        }
+        pintarAndamento(null);
+        if (data.estado_caso) aplicarEstado(data.estado_caso, true);
+        if (data.estado === "erro") throw new Error(data.erro || "O turno falhou.");
+        return;
+      }
+    }
 
     function colorize(patch) {
       return esc(patch).split("\n").map((line) => {
@@ -206,10 +286,17 @@
       const arvore = data.commitado
         ? (data.repo_limpo ? "Working tree limpo" : "Repo com mudanças")
         : (data.repo_limpo ? "Repo limpo" : "Repo com mudanças");
+      const ver = (data.verificacao && data.verificacao.estado) || "ausente";
+      const seloVer = ver === "passou" ? "Verificado" : (ver === "falhou" ? "Verificação falhou" : "Sem verificação");
+      const uso = data.uso && data.uso.chamadas
+        ? `<span class="badge">${data.uso.chamadas} chamadas · ${milhares(data.uso.tokens_entrada + data.uso.tokens_saida)} tokens</span>`
+        : "";
       return `<span class="badge ok">${esc(aplicado)}</span>` +
         (commit ? `<span class="badge">${esc(commit)}</span>` : "") +
         `<span class="badge ${data.repo_limpo ? "ok" : ""}">${esc(arvore)}</span>` +
+        `<span class="badge ${ver === "passou" ? "ok" : ""}">${seloVer}</span>` +
         `<span class="badge ${data.aprovado ? "ok" : ""}">${data.aprovado ? "Cadeia aprovada" : "Reparo pendente"}</span>` +
+        uso +
         `<span class="badge">Volta ${data.volta || 1}</span>` +
         (linhas.length > 1 ? `<span class="badge">${data.paralelo ? "2 tarefas independentes" : "2 tarefas no mesmo arquivo"}</span>` : "");
     }
@@ -274,6 +361,7 @@
           <p class="sub escopo">Tarefa: ${esc(linha.o_que_cuida || linha.titulo)}</p>
           <div class="cadeia">
             ${cardPasso("Código", "Devolveu o patch de " + esc(linha.titulo), `<p>Arquivos: ${esc(arquivos || "(nenhum)")}</p>`)}
+            ${cardVerificacao(linha.verificacao)}
             ${cardPasso("Revisor", "", `<ul>${pontos}</ul>`, stampRev)}
             ${cardPasso("Auditor · fim", "", `<p>${esc(a2.parecer || "")}</p>`, stampAud)}
           </div>
@@ -281,6 +369,9 @@
           <pre>${colorize(linha.codigo.resultado.patch || "")}</pre>
         </section>`;
       }).join("");
+      $("conjunto").innerHTML = linhas.length > 1
+        ? `<div class="linhas uma" style="margin-bottom:16px">${cardVerificacao(data.verificacao, "Verificação do conjunto")}</div>`
+        : "";
       const propostas = (data.performance && data.performance.resultado && data.performance.resultado.propostas) || [];
       $("tarefas").innerHTML = propostas.map((p) => `
         <div class="tarefa">
@@ -328,14 +419,18 @@
       const anterior = $("rodar").textContent;
       if (rotulo) $("rodar").textContent = rotulo;
       try {
-        const r = await fetch(url, {
+        const { r, data } = await api(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        const data = await r.json();
-        if (!r.ok) throw new Error(data.erro || "A fábrica não completou o passo.");
-        aplicarEstado(data, true);
+        if (r.status === 202 && data.trabalho) {
+          pintarAndamento({ passos: [], segundos: 0 });
+          await acompanhar(data.trabalho);
+        } else {
+          if (!r.ok) throw new Error(data.erro || "A fábrica não completou o passo.");
+          aplicarEstado(data, true);
+        }
       } catch (e) {
         $("erro").hidden = false;
         $("erro").textContent = e.message;
@@ -343,8 +438,49 @@
         $("rodar").disabled = false;
         $("rodar").textContent = anterior || "Rodar turno";
         document.body.classList.remove("ocupado");
+        pintarAndamento(null);
       }
     }
+
+    async function retomar(id) {
+      // A página foi recarregada com um turno rodando: volta a acompanhar em vez de deixar rodar de novo.
+      document.body.classList.add("ocupado");
+      $("rodar").disabled = true;
+      $("rodar").textContent = "Rodando…";
+      try {
+        await acompanhar(id);
+      } catch (e) {
+        $("erro").hidden = false;
+        $("erro").textContent = e.message;
+      } finally {
+        $("rodar").disabled = false;
+        $("rodar").textContent = "Rodar turno";
+        document.body.classList.remove("ocupado");
+        pintarAndamento(null);
+      }
+    }
+
+    function carregar() {
+      return api("/api/estado")
+        .then(({ r, data }) => {
+          if (!r.ok) throw new Error(data.erro || "Não consegui ler o estado.");
+          $("erro").hidden = true;
+          aplicarEstado(data, true);
+          if (data.trabalho) retomar(data.trabalho);
+        })
+        .catch((e) => {
+          $("erro").hidden = false;
+          $("erro").textContent = e.message;
+        });
+    }
+
+    $("token-ok").addEventListener("click", () => {
+      token = $("token").value.trim();
+      try { localStorage.setItem("fabrica_token", token); } catch (e) { /* segue só nesta aba */ }
+      $("token").value = "";
+      $("token-box").hidden = true;
+      carregar();
+    });
 
     function rodar(fala, repo) {
       return chamar("/api/turno", { pedido: fala, repo, caso_id: estado.caso_id || null }, "Rodando…");
@@ -375,13 +511,7 @@
       aplicarEstado(estado, true);
     });
 
-    fetch("/api/estado")
-      .then((r) => r.json())
-      .then((data) => aplicarEstado(data, true))
-      .catch((e) => {
-        $("erro").hidden = false;
-        $("erro").textContent = e.message;
-      });
+    carregar();
   </script>
 </body>
 </html>

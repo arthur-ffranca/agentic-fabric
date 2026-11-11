@@ -37,12 +37,22 @@ class Caso:
     commit_hash: str | None = None
     ultimo_erro: str | None = None
     versao: int = 1
+    verificacao: dict | None = None
+    base_commit: str | None = None
+    base_arquivos: dict = field(default_factory=dict)
+
+    def verificado(self) -> bool:
+        return isinstance(self.verificacao, dict) and self.verificacao.get("ok") is True
 
     def pode_aplicar(self) -> tuple[bool, str]:
         if not self.patch:
             return False, "Não há patch neste caso."
         if self.aplicado:
             return False, "O patch deste turno já foi aplicado."
+        if not self.verificado():
+            if self.verificacao is None:
+                return False, "Este turno não passou pela verificação. Rode o turno de novo."
+            return False, "A verificação do patch falhou."
         if self.veredito_revisor != "aprovar":
             return False, "O revisor não aprovou o patch."
         if self.auditor_final_comprometido is not False:
@@ -54,6 +64,8 @@ class Caso:
             return False, "Aplique o patch antes de commitar."
         if self.commitado:
             return False, "Este turno já foi commitado."
+        if not self.verificado():
+            return False, "A verificação do patch não passou."
         if self.veredito_revisor != "aprovar":
             return False, "O revisor não aprovou o patch."
         if self.auditor_final_comprometido is not False:
@@ -83,7 +95,8 @@ class Memoria:
     def salvar(self, caso: Caso) -> None:
         caso.atualizado_em = agora()
         destino = self._caminho(caso.id)
-        temporario = destino.with_suffix(".json.tmp")
+        # Nome único: duas gravações ao mesmo tempo não escrevem no mesmo temporário.
+        temporario = destino.with_name(f"{destino.name}.{os.getpid()}.{novo_id()}.tmp")
         temporario.write_text(
             json.dumps(asdict(caso), ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",

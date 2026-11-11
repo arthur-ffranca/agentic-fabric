@@ -15,6 +15,7 @@ from fabrica.revisor import Revisor
 from fabrica.servidor import criar_servidor
 from fabrica.tarefa import Tarefa, novo_id
 from fabrica.triagem import Triagem, planejar_heuristica
+from fabrica.verificador import Verificador
 
 
 class FilaEspia(FilaEmProcesso):
@@ -292,6 +293,7 @@ def test_aplicar_e_commit_travados_na_interface(tmp_path, monkeypatch):
         FilaEmProcesso(),
         codigo_b=Codigo(llm),
         llm=llm,
+        verificador=Verificador(),
     )
     orq = Orquestrador(memoria, triagem)
     httpd = criar_servidor("127.0.0.1", 0, orquestrador=orq)
@@ -309,9 +311,15 @@ def test_aplicar_e_commit_travados_na_interface(tmp_path, monkeypatch):
         assert instantaneo(exemplo.caminho) == antes
 
         pedido = "Adiciona validação de tipo na função soma em app.py e documenta a função em outro/notas.txt"
-        codigo, corpo = _post(porta, "/api/turno", {"pedido": pedido, "repo": str(exemplo.caminho)})
-        assert codigo == 200, corpo
+        codigo, aberto = _post(porta, "/api/turno", {"pedido": pedido, "repo": str(exemplo.caminho)})
+        assert codigo == 202, aberto
+        trabalho = _esperar(porta, aberto["trabalho"])
+        assert trabalho["estado"] == "concluido", trabalho
+        assert trabalho["passos"][0] == "auditor:inicio"
+        assert trabalho["passos"].count("verificador") == 3
+        corpo = trabalho["estado_caso"]
         atual = corpo["atual"]
+        assert atual["verificacao"]["estado"] == "passou"
         assert len(atual["linhas"]) == 2
         assert atual["paralelo"] is True
         assert atual["aplicado"] is False
@@ -387,6 +395,16 @@ def test_sem_chave_a_interface_nao_inventa_patch(tmp_path, monkeypatch):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def _esperar(porta: int, trabalho: str, prazo: float = 20.0) -> dict:
+    limite = time.time() + prazo
+    while time.time() < limite:
+        visto = _get(porta, f"/api/trabalho?id={trabalho}")
+        if visto["estado"] != "rodando":
+            return visto
+        time.sleep(0.05)
+    raise AssertionError("o turno não terminou a tempo")
 
 
 def _get(porta: int, caminho: str) -> dict:
