@@ -15,6 +15,7 @@ from fabrica.orquestrador import Orquestrador
 from fabrica.performance import Performance
 from fabrica.revisor import Revisor
 from fabrica.triagem import Triagem
+from fabrica.verificador import Verificador
 
 
 def construir_padrao(llm=None, memoria=None, *, max_ciclos: int = 3, timeout_performance: float = 180) -> Orquestrador:
@@ -29,6 +30,7 @@ def construir_padrao(llm=None, memoria=None, *, max_ciclos: int = 3, timeout_per
         FilaEmProcesso(),
         codigo_b=Codigo(llm),
         llm=llm,
+        verificador=Verificador(),
         max_ciclos=max_ciclos,
         timeout_performance=timeout_performance,
     )

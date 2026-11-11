@@ -169,6 +169,8 @@ def test_aplicar_reconfere_caminho_proibido(tmp_path, capsys):
     caso.nao_tocar_caminhos = ["README.md"]
     caso.veredito_revisor = "aprovar"
     caso.auditor_final_comprometido = False
+    caso.verificacao = {"ok": True, "etapas": []}
+    caso.base_arquivos = {}
     caso.aplicado = False
     memoria.salvar(caso)
     codigo = main(["aplicar", "--caso", mensagem.caso_id])

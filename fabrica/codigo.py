@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fabrica.repositorio import caminhos_do_patch, checar_patch, extrair_diff, formatar_conteudos
+from fabrica.repositorio import (
+    adaptar_fim_de_linha,
+    caminhos_do_patch,
+    checar_patch,
+    extrair_diff,
+    formatar_conteudos,
+)
 from fabrica.tarefa import Tarefa
 from fabrica.texto import formatar_itens, papel
 
@@ -57,12 +63,17 @@ Se não der para fazer com segurança, responda exatamente SEM_PATCH e, na linha
             base += "\nEsta tarefa só pode alterar: " + ", ".join(foco) + ".\n"
         anteriores = tarefa.entrada.get("patches_anteriores") or ""
         if anteriores:
-            base += (
-                "\nOutro agente já produziu este patch, ainda sem aplicar no disco. "
-                "O seu diff precisa aplicar no arquivo como ele está agora.\n"
-                + anteriores
-                + "\n"
-            )
+            if tarefa.entrada.get("conteudos_com_anteriores"):
+                aviso = (
+                    "\nOutro agente já produziu este patch, ainda sem aplicar no disco. "
+                    "O conteúdo dos arquivos acima já inclui esse patch, e o seu diff precisa aplicar depois dele.\n"
+                )
+            else:
+                aviso = (
+                    "\nOutro agente já produziu este patch, ainda sem aplicar no disco. "
+                    "O seu diff precisa aplicar depois dele.\n"
+                )
+            base += aviso + anteriores + "\n"
         usuario = base
         patch = ""
         valido = False
@@ -79,7 +90,14 @@ Se não der para fazer com segurança, responda exatamente SEM_PATCH e, na linha
                 caminhos = []
                 break
             patch = extrair_diff(texto)
-            valido, ultimo_erro, caminhos = checar_patch(repo, patch)
+            valido, ultimo_erro, caminhos = checar_patch(repo, patch, anteriores)
+            if not valido and patch:
+                # Arquivo em CRLF no disco e diff em LF do modelo: tenta de novo com o fim de linha do arquivo.
+                adaptado = adaptar_fim_de_linha(repo, patch)
+                if adaptado != patch:
+                    valido_crlf, _, caminhos_crlf = checar_patch(repo, adaptado, anteriores)
+                    if valido_crlf:
+                        patch, valido, ultimo_erro, caminhos = adaptado, True, None, caminhos_crlf
             if valido:
                 notas = ""
                 break

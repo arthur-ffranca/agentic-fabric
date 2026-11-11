@@ -6,6 +6,7 @@ _ROTULO = {
     "auditor:inicio": "auditor (início)",
     "codigo": "código",
     "revisor": "revisor",
+    "verificador": "verificação",
     "auditor:fim": "auditor (fim)",
 }
 
@@ -98,6 +99,14 @@ def apresentar_turno(caso, resultado: dict, origem_proposta: dict | None = None)
             linhas.append(f"- {motivo}")
         if rodada.get("veredito") != "aprovar" and rodada.get("correcoes"):
             linhas.append(str(rodada["correcoes"]))
+    verificacao = resultado.get("verificacao")
+    if isinstance(verificacao, dict):
+        linhas.append("")
+        linhas.append("Verificação")
+        linhas.append("Resultado: passou" if verificacao.get("ok") else "Resultado: falhou. Aplicação bloqueada.")
+        for etapa in verificacao.get("etapas") or []:
+            marca = {True: "ok", False: "falhou"}.get(etapa.get("ok"), "não conta")
+            linhas.append(f"- {etapa.get('nome')}: {marca}. {etapa.get('detalhe') or ''}".rstrip())
     linhas.append("")
     linhas.append("Auditor (fim)")
     if fim.get("comprometido"):
@@ -129,11 +138,21 @@ def apresentar_turno(caso, resultado: dict, origem_proposta: dict | None = None)
         linhas.append(
             f"   Aceitar só esta: fabrica aceitar --caso {caso.id} --proposta {proposta.get('id')}"
         )
+    uso = resultado.get("uso") or {}
+    if uso.get("chamadas"):
+        linhas.append("")
+        linhas.append(
+            f"Modelo: {uso['chamadas']} chamadas, {uso.get('tokens_entrada', 0)} tokens de entrada "
+            f"e {uso.get('tokens_saida', 0)} de saída."
+        )
     linhas.append("")
     linhas.append(f"Nada foi aplicado em {caso.repo}.")
     liberado, _ = caso.pode_aplicar()
     if liberado:
         linhas.append(f"Aplicar este patch: fabrica aplicar --caso {caso.id}")
     else:
-        linhas.append("Aplicar permanece bloqueado até o revisor aprovar e o auditor final não apontar compromisso.")
+        linhas.append(
+            "Aplicar permanece bloqueado até a verificação passar, o revisor aprovar "
+            "e o auditor final não apontar compromisso."
+        )
     return "\n".join(linhas).rstrip() + "\n"

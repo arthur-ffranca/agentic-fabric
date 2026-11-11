@@ -6,6 +6,7 @@ Não escolhe especialista e não aplica mudança por conta própria.
 from __future__ import annotations
 
 import copy
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,9 +17,14 @@ from fabrica.repositorio import (
     aplicar_patch,
     caminho_inseguro,
     caminho_proibido,
+    caminho_sensivel,
     caminhos_do_patch,
+    commit_atual,
     criar_commit,
+    dentro_das_raizes,
+    impressao_dos_arquivos,
     localizar_repositorio,
+    raizes_do_ambiente,
 )
 from fabrica.tarefa import Tarefa, novo_id
 
@@ -30,10 +36,21 @@ class Mensagem:
     codigo: int = 0
 
 
+OCUPADO = "Este caso já tem um passo em andamento. Espere terminar e tente de novo."
+
+
 class Orquestrador:
-    def __init__(self, memoria: Memoria, triagem=None) -> None:
+    def __init__(self, memoria: Memoria, triagem=None, raizes=None) -> None:
         self.memoria = memoria
         self.triagem = triagem
+        # Pastas em que um repositório alvo pode estar. None: qualquer caminho (uso local).
+        self.raizes = raizes_do_ambiente() if raizes is None else raizes
+        self._travas: dict[str, threading.Lock] = {}
+        self._trava_das_travas = threading.Lock()
+
+    def _trava(self, caso_id: str) -> threading.Lock:
+        with self._trava_das_travas:
+            return self._travas.setdefault(caso_id, threading.Lock())
 
     def executar_turno(
         self,
@@ -42,7 +59,20 @@ class Orquestrador:
         pedido: str,
         caso_id: str | None,
         origem_proposta: dict | None = None,
+        progresso=None,
     ) -> Mensagem:
+        """Um caso roda um passo por vez. O segundo pedido ao mesmo tempo é recusado, não perdido em silêncio."""
+        if not caso_id:
+            return self._turno(repo, pedido, None, origem_proposta, progresso)
+        trava = self._trava(caso_id)
+        if not trava.acquire(blocking=False):
+            return Mensagem(caso_id, OCUPADO, codigo=1)
+        try:
+            return self._turno(repo, pedido, caso_id, origem_proposta, progresso)
+        finally:
+            trava.release()
+
+    def _turno(self, repo, pedido, caso_id, origem_proposta, progresso) -> Mensagem:
         pedido = (pedido or "").strip()
         if not pedido:
             return Mensagem(caso_id or "", "O pedido está vazio.", codigo=1)
@@ -50,6 +80,13 @@ class Orquestrador:
         if erro:
             return erro
         assert caso is not None
+        if caso_id:
+            return self._rodar(caso, pedido, origem_proposta, progresso)
+        # Caso recém-aberto: a trava começa a valer aqui, para aplicar ou outro turno não entrarem no meio.
+        with self._trava(caso.id):
+            return self._rodar(caso, pedido, origem_proposta, progresso)
+
+    def _rodar(self, caso, pedido, origem_proposta, progresso) -> Mensagem:
         tarefa = Tarefa(
             id=novo_id(),
             destinatario="triagem",
@@ -77,12 +114,23 @@ class Orquestrador:
         if self.triagem is None:
             raise ErroFabrica("A triagem não está disponível.")
         # A ponte chama o orquestrador direto, e daqui a triagem também é chamada direta.
+        if progresso is not None:
+            progresso("caso:" + caso.id)
         try:
-            resposta = self.triagem.receber(tarefa)
+            if progresso is None:
+                resposta = self.triagem.receber(tarefa)
+            else:
+                resposta = self.triagem.receber(tarefa, ao_passo=progresso)
         except ErroFabrica as exc:
+            parcial = getattr(exc, "parcial", None)
+            guardado = ""
+            if isinstance(parcial, dict) and (parcial.get("patch") or "").strip():
+                # O turno parou no meio. O patch fica no caso, sem liberação para aplicar.
+                self._gravar_turno(caso, pedido, parcial, origem_proposta, incompleto=str(exc))
+                guardado = " O patch feito até ali ficou guardado no caso, sem liberação para aplicar."
             caso.ultimo_erro = str(exc)
             self.memoria.salvar(caso)
-            return Mensagem(caso.id, f"Caso {caso.id}\n{exc}\nNada foi aplicado.", codigo=1)
+            return Mensagem(caso.id, f"Caso {caso.id}\n{exc}\nNada foi aplicado.{guardado}", codigo=1)
         if resposta.tipo == "perguntar":
             caso.pergunta_pendente = {
                 "tarefa_id": resposta.id,
@@ -100,7 +148,7 @@ class Orquestrador:
             codigo=0,
         )
 
-    def aceitar(self, caso_id: str, proposta_id: str) -> Mensagem:
+    def aceitar(self, caso_id: str, proposta_id: str, progresso=None) -> Mensagem:
         caso = self.memoria.carregar(caso_id)
         if caso.pergunta_pendente:
             return Mensagem(
@@ -126,18 +174,41 @@ class Orquestrador:
             pedido=pedido,
             caso_id=caso.id,
             origem_proposta=proposta,
+            progresso=progresso,
         )
 
     def aplicar(self, caso_id: str) -> Mensagem:
+        trava = self._trava(caso_id)
+        if not trava.acquire(blocking=False):
+            return Mensagem(caso_id, OCUPADO, codigo=1)
+        try:
+            return self._aplicar(caso_id)
+        finally:
+            trava.release()
+
+    def commit(self, caso_id: str) -> Mensagem:
+        trava = self._trava(caso_id)
+        if not trava.acquire(blocking=False):
+            return Mensagem(caso_id, OCUPADO, codigo=1)
+        try:
+            return self._commit(caso_id)
+        finally:
+            trava.release()
+
+    def _aplicar(self, caso_id: str) -> Mensagem:
         caso = self.memoria.carregar(caso_id)
         liberado, motivo = caso.pode_aplicar()
         if not liberado:
             return Mensagem(caso.id, f"Aplicação bloqueada. {motivo}", codigo=1)
+        if not dentro_das_raizes(caso.repo, self.raizes):
+            return Mensagem(caso.id, "Aplicação bloqueada. O repositório do caso está fora das pastas permitidas.", codigo=1)
         caminhos = caminhos_do_patch(caso.patch or "")
         ruins = [
             caminho
             for caminho in caminhos
-            if caminho_inseguro(caminho) or caminho_proibido(caminho, caso.nao_tocar_caminhos or [])
+            if caminho_inseguro(caminho)
+            or caminho_sensivel(caminho)
+            or caminho_proibido(caminho, caso.nao_tocar_caminhos or [])
         ]
         if ruins:
             return Mensagem(
@@ -145,6 +216,26 @@ class Orquestrador:
                 "Aplicação bloqueada. O patch mexe em caminho protegido: " + ", ".join(ruins) + ".",
                 codigo=1,
             )
+        # A revisão e a verificação valem para o estado em que foram feitas.
+        atual = commit_atual(caso.repo)
+        if caso.base_commit and atual and atual != caso.base_commit:
+            return Mensagem(
+                caso.id,
+                "Aplicação bloqueada. O repositório mudou desde a revisão "
+                f"(era {caso.base_commit[:7]}, agora {atual[:7]}). Rode o turno de novo.",
+                codigo=1,
+            )
+        if caso.base_arquivos:
+            agora_ = impressao_dos_arquivos(caso.repo, list(caso.base_arquivos))
+            mudados = [nome for nome, marca in caso.base_arquivos.items() if agora_.get(nome) != marca]
+            if mudados:
+                return Mensagem(
+                    caso.id,
+                    "Aplicação bloqueada. Estes arquivos mudaram desde a revisão: "
+                    + ", ".join(mudados)
+                    + ". Rode o turno de novo.",
+                    codigo=1,
+                )
         try:
             aplicar_patch(Path(caso.repo), caso.patch or "")
         except ErroRepositorio as exc:
@@ -162,11 +253,13 @@ class Orquestrador:
             codigo=0,
         )
 
-    def commit(self, caso_id: str) -> Mensagem:
+    def _commit(self, caso_id: str) -> Mensagem:
         caso = self.memoria.carregar(caso_id)
         liberado, motivo = caso.pode_commitar()
         if not liberado:
             return Mensagem(caso.id, f"Commit bloqueado. {motivo}", codigo=1)
+        if not dentro_das_raizes(caso.repo, self.raizes):
+            return Mensagem(caso.id, "Commit bloqueado. O repositório do caso está fora das pastas permitidas.", codigo=1)
         caminhos = caminhos_do_patch(caso.patch or "")
         pedido = ""
         if caso.turnos:
@@ -190,6 +283,8 @@ class Orquestrador:
     def _abrir(self, repo: str | None, caso_id: str | None):
         if caso_id:
             caso = self.memoria.carregar(caso_id)
+            if not dentro_das_raizes(caso.repo, self.raizes):
+                return None, Mensagem(caso.id, "O repositório do caso está fora das pastas permitidas.", codigo=1)
             if repo:
                 try:
                     topo, foco = localizar_repositorio(repo)
@@ -204,13 +299,19 @@ class Orquestrador:
             return caso, None
         if not repo:
             return None, Mensagem("", "Informe --repo para abrir um caso.", codigo=1)
+        if not dentro_das_raizes(repo, self.raizes):
+            return None, Mensagem("", "Este caminho está fora das pastas permitidas (FABRICA_REPOS).", codigo=1)
         try:
             topo, foco = localizar_repositorio(repo)
         except ErroRepositorio as exc:
             return None, Mensagem("", str(exc), codigo=1)
+        if not dentro_das_raizes(topo, self.raizes):
+            return None, Mensagem("", "Este repositório está fora das pastas permitidas (FABRICA_REPOS).", codigo=1)
         return self.memoria.criar(repo=str(topo), foco=foco), None
 
-    def _gravar_turno(self, caso, pedido: str, resultado: dict, origem_proposta: dict | None) -> None:
+    def _gravar_turno(
+        self, caso, pedido: str, resultado: dict, origem_proposta: dict | None, incompleto: str | None = None
+    ) -> None:
         salvo = copy.deepcopy(resultado)
         inicio = _enxugar(salvo.get("auditor_inicio"))
         revisor = salvo.get("revisor") or {}
@@ -231,6 +332,9 @@ class Orquestrador:
                 "veredito_revisor": revisor.get("veredito"),
                 "linhas": salvo.get("linhas") or [],
                 "paralelo": bool(salvo.get("paralelo")),
+                "verificacao": salvo.get("verificacao"),
+                "uso": salvo.get("uso"),
+                "incompleto": incompleto,
                 "aplicado": False,
                 "commitado": False,
                 "commit": None,
@@ -243,12 +347,16 @@ class Orquestrador:
         comprometido = auditor_fim.get("comprometido") if auditor_fim else None
         caso.auditor_final_comprometido = comprometido
         caso.nao_tocar_caminhos = list((resultado.get("auditor_inicio") or {}).get("nao_tocar_caminhos") or [])
+        caso.verificacao = salvo.get("verificacao")
+        # Guarda em que estado o patch foi revisado, para o aplicar recusar se o repositório mudar.
+        caso.base_commit = commit_atual(caso.repo) if caso.patch else None
+        caso.base_arquivos = impressao_dos_arquivos(caso.repo, caminhos_do_patch(caso.patch)) if caso.patch else {}
         caso.propostas_pendentes = salvo.get("propostas") or []
         caso.aplicado = False
         caso.commitado = False
         caso.commit_hash = None
-        caso.ultimo_erro = None
-        if origem_proposta:
+        caso.ultimo_erro = incompleto
+        if origem_proposta and not incompleto:
             caso.propostas_aceitas.append(
                 {
                     "id": origem_proposta.get("id"),

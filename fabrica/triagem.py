@@ -8,7 +8,9 @@ import threading
 from fabrica.erros import ErroFabrica, ErroLLM
 from fabrica.fila import CaixaPatch
 from fabrica.llm import solicitar_json
+from fabrica.repositorio import ler_com_patch
 from fabrica.tarefa import Tarefa, novo_id
+from fabrica.uso import Medidor
 
 _CAMINHO = re.compile(
     r"\b[\w./-]+\.(?:py|js|ts|tsx|jsx|go|rs|java|rb|php|cs|md|json|yml|yaml|toml|css|html|sql|txt)\b",
@@ -67,6 +69,22 @@ def planejar_heuristica(pedido: str) -> list[dict]:
     return [_spec(pedido, caminhos)]
 
 
+class _Trilha(list):
+    """A trilha do turno. Cada passo novo é avisado a quem acompanha (a tela, pelo servidor)."""
+
+    def __init__(self, ao_passo=None) -> None:
+        super().__init__()
+        self._ao_passo = ao_passo
+
+    def append(self, nome) -> None:
+        super().append(nome)
+        if self._ao_passo is not None:
+            try:
+                self._ao_passo(nome)
+            except Exception:
+                pass
+
+
 class Triagem:
     def __init__(
         self,
@@ -79,6 +97,7 @@ class Triagem:
         codigo_b=None,
         llm=None,
         planejar=None,
+        verificador=None,
         max_ciclos: int = 3,
         timeout_performance: float = 180,
     ) -> None:
@@ -90,10 +109,11 @@ class Triagem:
         self.fila = fila
         self.llm = llm
         self.planejar = planejar
+        self.verificador = verificador
         self.max_ciclos = max_ciclos
         self.timeout_performance = timeout_performance
 
-    def receber(self, tarefa: Tarefa) -> Tarefa:
+    def receber(self, tarefa: Tarefa, ao_passo=None) -> Tarefa:
         if tarefa.tipo != "resolver" or tarefa.destinatario != "triagem":
             raise ErroFabrica("A triagem só recebe tarefa do tipo resolver.")
         pedido_cru = (tarefa.entrada.get("pedido") or "").strip()
@@ -104,7 +124,7 @@ class Triagem:
             pedido = pedido_cru
         if pedido_ambiguo(pedido):
             return self._pergunta(tarefa, pedido)
-        return self._cadeia(tarefa, pedido)
+        return self._cadeia(tarefa, pedido, ao_passo)
 
     def _pergunta(self, tarefa: Tarefa, pedido: str) -> Tarefa:
         texto = f'Entendi assim: "{pedido.strip()}". O que deve mudar, e em qual arquivo ou módulo?'
@@ -121,11 +141,12 @@ class Triagem:
             resultado_esperado="Resposta que torne o pedido executável",
         )
 
-    def _cadeia(self, tarefa: Tarefa, pedido: str) -> Tarefa:
+    def _cadeia(self, tarefa: Tarefa, pedido: str, ao_passo=None) -> Tarefa:
         repo = tarefa.entrada.get("repo")
         foco = tarefa.entrada.get("foco") or "."
         historico = (tarefa.contexto or {}).get("turnos_anteriores") or []
         caixa = CaixaPatch()
+        medidor = Medidor()
         tarefa_perf = Tarefa(
             id=novo_id(),
             destinatario="performance",
@@ -140,10 +161,16 @@ class Triagem:
                 "Lista de tarefas executáveis pelo código, cada uma com o que fazer, onde e o que melhora."
             ),
         )
+
+        def performance(corrente):
+            with medidor.ativo():
+                return self.performance.executar(corrente, caixa)
+
         # A fila só entra aqui, depois do despacho, porque a performance corre fora da cadeia.
-        trabalho = self.fila.despachar(tarefa_perf, lambda corrente: self.performance.executar(corrente, caixa))
-        trilha: list[str] = []
+        trabalho = self.fila.despachar(tarefa_perf, performance)
+        trilha = _Trilha(ao_passo)
         passos: list[dict] = []
+        rascunho: dict = {}
         erro_cadeia: Exception | None = None
         t_ini = None
         linhas: list[dict] = []
@@ -153,34 +180,31 @@ class Triagem:
         rodadas: list[dict] = []
         t_fim = None
         paralelo = False
+        verificacao = None
         try:
-            t_ini = self.auditor.executar(self._auditor("inicio", repo, foco, pedido))
-            trilha.append("auditor:inicio")
-            passos.append(_passo(t_ini))
-            restricoes = t_ini.resultado or {}
-            conteudos = restricoes.get("conteudos") or {}
-            specs = self._planejar(pedido, restricoes)
-            if len(specs) <= 1:
-                uma = self._continuar_uma(
-                    repo, pedido, restricoes, conteudos, historico, caixa, passos, trilha
-                )
-                linhas = [uma["linha"]]
-                patch = uma["patch"]
-                arquivos_patch = uma["arquivos"]
-                revisor = uma["revisor"]
-                rodadas = uma["rodadas"]
-                t_fim = uma["auditor_fim"]
-            else:
-                varias = self._continuar_varias(
-                    repo, specs, restricoes, conteudos, historico, caixa, passos, trilha
-                )
-                linhas = varias["linhas"]
-                patch = varias["patch"]
-                arquivos_patch = varias["arquivos"]
-                revisor = varias["revisor"]
-                rodadas = varias["rodadas"]
-                t_fim = varias["auditor_fim"]
-                paralelo = varias["paralelo"]
+            with medidor.ativo():
+                t_ini = self.auditor.executar(self._auditor("inicio", repo, foco, pedido))
+                trilha.append("auditor:inicio")
+                passos.append(_passo(t_ini))
+                restricoes = t_ini.resultado or {}
+                conteudos = restricoes.get("conteudos") or {}
+                specs = self._planejar(pedido, restricoes)
+                if len(specs) <= 1:
+                    final = self._continuar_uma(
+                        repo, pedido, restricoes, conteudos, historico, caixa, passos, trilha, rascunho
+                    )
+                else:
+                    final = self._continuar_varias(
+                        repo, specs, restricoes, conteudos, historico, caixa, passos, trilha, rascunho, medidor
+                    )
+                linhas = final["linhas"]
+                patch = final["patch"]
+                arquivos_patch = final["arquivos"]
+                revisor = final["revisor"]
+                rodadas = final["rodadas"]
+                t_fim = final["auditor_fim"]
+                paralelo = final["paralelo"]
+                verificacao = final["verificacao"]
         except Exception as exc:
             erro_cadeia = exc
             caixa.fechar(erro=str(exc))
@@ -195,6 +219,17 @@ class Triagem:
         except Exception as exc:
             aviso = str(exc)
         if erro_cadeia:
+            if isinstance(erro_cadeia, ErroFabrica):
+                # O que já estava pronto segue com o erro, para o caso não perder o patch.
+                erro_cadeia.parcial = {
+                    "pedido": pedido,
+                    "auditor_inicio": None if t_ini is None else t_ini.resultado,
+                    "patch": rascunho.get("patch") or "",
+                    "revisor": rascunho.get("revisor"),
+                    "trilha": list(trilha),
+                    "passos": passos,
+                    "uso": medidor.total(),
+                }
             raise erro_cadeia
         tarefa.resultado = {
             "pedido": pedido,
@@ -207,44 +242,24 @@ class Triagem:
             "rodadas_revisor": rodadas,
             "ciclos_revisor": len(rodadas),
             "auditor_fim": t_fim,
+            "verificacao": verificacao,
             "propostas": propostas,
             "aviso_performance": aviso,
-            "trilha": trilha,
+            "trilha": list(trilha),
             "passos": passos,
             "linhas": linhas,
             "paralelo": paralelo,
+            "uso": medidor.total(),
         }
         tarefa.status = "concluida"
         return tarefa
 
-    def _continuar_uma(self, repo, pedido, restricoes, conteudos, historico, caixa, passos, trilha) -> dict:
-        t_cod = self.codigo.executar(self._codigo(repo, pedido, restricoes, conteudos, None, None, historico))
-        trilha.append("codigo")
-        passos.append(_passo(t_cod))
-        t_rev = self.revisor.executar(self._revisor(repo, pedido, t_cod.resultado or {}, restricoes, conteudos))
-        trilha.append("revisor")
-        passos.append(_passo(t_rev))
-        rodadas = [t_rev.resultado or {}]
-        ciclos = 1
-        while (t_rev.resultado or {}).get("veredito") != "aprovar" and ciclos < self.max_ciclos:
-            t_cod = self.codigo.executar(
-                self._codigo(
-                    repo,
-                    pedido,
-                    restricoes,
-                    conteudos,
-                    (t_rev.resultado or {}).get("correcoes") or "",
-                    (t_cod.resultado or {}).get("patch") or "",
-                    historico,
-                )
-            )
-            trilha.append("codigo")
-            passos.append(_passo(t_cod))
-            t_rev = self.revisor.executar(self._revisor(repo, pedido, t_cod.resultado or {}, restricoes, conteudos))
-            trilha.append("revisor")
-            passos.append(_passo(t_rev))
-            rodadas.append(t_rev.resultado or {})
-            ciclos += 1
+    def _continuar_uma(self, repo, pedido, restricoes, conteudos, historico, caixa, passos, trilha, rascunho) -> dict:
+        pronto = self._laco(
+            self.codigo, repo, pedido, restricoes, conteudos, historico, passos, trilha, rascunho=rascunho
+        )
+        t_cod = pronto["codigo"]
+        t_rev = pronto["revisor"]
         patch = (t_cod.resultado or {}).get("patch") or ""
         caixa.publicar(patch)
         t_fim = self.auditor.executar(
@@ -259,24 +274,38 @@ class Triagem:
             agente=t_cod,
             revisor=t_rev,
             auditor_fim=t_fim,
-            rodadas=rodadas,
+            rodadas=pronto["rodadas"],
             paralelo=False,
+            verificacao=pronto["verificacao"],
         )
         return {
-            "linha": linha,
+            "linhas": [linha],
             "patch": patch,
             "arquivos": (t_cod.resultado or {}).get("arquivos") or [],
             "revisor": t_rev.resultado,
-            "rodadas": rodadas,
+            "rodadas": pronto["rodadas"],
             "auditor_fim": t_fim.resultado,
+            "paralelo": False,
+            "verificacao": pronto["verificacao"],
         }
 
-    def _continuar_varias(self, repo, specs, restricoes, conteudos, historico, caixa, passos, trilha) -> dict:
+    def _continuar_varias(
+        self, repo, specs, restricoes, conteudos, historico, caixa, passos, trilha, rascunho, medidor
+    ) -> dict:
         agentes = [self.codigo, self.codigo_b]
         ondas = _ondas(specs)
         parciais: list[dict | None] = [None] * len(specs)
+        trava = threading.Lock()
         for onda in ondas:
             anteriores = _juntar([item["patch"] for item in parciais if item])
+            conteudos_onda = conteudos
+            ja_inclui = False
+            if anteriores and conteudos:
+                # Quem vem depois enxerga o arquivo como ele fica com o patch de quem veio antes.
+                atualizados = ler_com_patch(repo, anteriores, list(conteudos))
+                if atualizados is not None:
+                    conteudos_onda = {**conteudos, **atualizados}
+                    ja_inclui = True
             if len(onda) == 1:
                 indice = onda[0]
                 parciais[indice] = self._ate_revisor(
@@ -284,30 +313,41 @@ class Triagem:
                     specs[indice],
                     agentes[indice],
                     restricoes,
-                    conteudos,
+                    conteudos_onda,
                     historico,
                     anteriores,
                     passos,
                     trilha,
+                    trava=trava,
+                    ja_inclui=ja_inclui,
                 )
+                rascunho["patch"] = _juntar([item["patch"] for item in parciais if item])
                 continue
             erros: list[Exception] = []
-            trava = threading.Lock()
 
-            def correr(indice: int, spec: dict) -> None:
+            def correr(
+                indice: int,
+                spec: dict,
+                anteriores=anteriores,
+                conteudos_onda=conteudos_onda,
+                ja_inclui=ja_inclui,
+                erros=erros,
+            ) -> None:
                 try:
-                    pronto = self._ate_revisor(
-                        repo,
-                        spec,
-                        agentes[indice],
-                        restricoes,
-                        conteudos,
-                        historico,
-                        anteriores,
-                        passos,
-                        trilha,
-                        trava=trava,
-                    )
+                    with medidor.ativo():
+                        pronto = self._ate_revisor(
+                            repo,
+                            spec,
+                            agentes[indice],
+                            restricoes,
+                            conteudos_onda,
+                            historico,
+                            anteriores,
+                            passos,
+                            trilha,
+                            trava=trava,
+                            ja_inclui=ja_inclui,
+                        )
                 except Exception as exc:
                     erros.append(exc)
                     return
@@ -321,11 +361,15 @@ class Triagem:
                 thread.start()
             for thread in threads:
                 thread.join()
+            rascunho["patch"] = _juntar([item["patch"] for item in parciais if item])
             if erros:
                 raise erros[0]
         patch = _juntar([item["patch"] for item in parciais if item])
+        rascunho["patch"] = patch
+        # Cada patch passou sozinho. Aqui passa o conjunto, que é o que vai ser aplicado.
+        verificacao = self._verificar(repo, patch, True, restricoes, "", trilha, passos, trava)
         caixa.publicar(patch)
-        for indice, parcial in enumerate(parciais):
+        for parcial in parciais:
             if parcial is None:
                 raise ErroFabrica("Uma tarefa de código não devolveu resultado.")
             t_fim = self.auditor.executar(
@@ -338,9 +382,8 @@ class Triagem:
                     patch=parcial["patch"],
                 )
             )
-            with threading.Lock():
-                trilha.append("auditor:fim")
-                passos.append(_passo(t_fim))
+            trilha.append("auditor:fim")
+            passos.append(_passo(t_fim))
             parcial["auditor_fim"] = t_fim
         linhas = []
         for indice, parcial in enumerate(parciais):
@@ -355,6 +398,7 @@ class Triagem:
                     auditor_fim=parcial["auditor_fim"],
                     rodadas=parcial["rodadas"],
                     paralelo=len(ondas) == 1,
+                    verificacao=parcial["verificacao"],
                 )
             )
         vereditos = [(linha["revisor"] or {}).get("veredito") for linha in linhas]
@@ -387,6 +431,7 @@ class Triagem:
             "rodadas": [linha["revisor"] or {} for linha in linhas],
             "auditor_fim": {"comprometido": comprometido, "relato": " ".join(relatos)},
             "paralelo": len(ondas) == 1,
+            "verificacao": verificacao,
         }
 
     def _ate_revisor(
@@ -401,54 +446,143 @@ class Triagem:
         passos,
         trilha,
         trava: threading.Lock | None = None,
+        ja_inclui: bool = False,
     ) -> dict:
         pedido = spec["o_que_fazer"]
-        arquivos = spec.get("arquivos") or []
-        t_cod = agente.executar(
-            self._codigo(
-                repo,
-                pedido,
-                restricoes,
-                conteudos,
-                None,
-                None,
-                historico,
-                arquivos_desta_tarefa=arquivos,
-                patches_anteriores=anteriores,
-            )
+        pronto = self._laco(
+            agente,
+            repo,
+            pedido,
+            restricoes,
+            conteudos,
+            historico,
+            passos,
+            trilha,
+            trava=trava,
+            arquivos=spec.get("arquivos") or [],
+            anteriores=anteriores,
+            ja_inclui=ja_inclui,
         )
-        self._anotar(trilha, passos, "codigo", t_cod, trava)
-        t_rev = self.revisor.executar(self._revisor(repo, pedido, t_cod.resultado or {}, restricoes, conteudos))
-        self._anotar(trilha, passos, "revisor", t_rev, trava)
-        rodadas = [t_rev.resultado or {}]
-        ciclos = 1
-        while (t_rev.resultado or {}).get("veredito") != "aprovar" and ciclos < self.max_ciclos:
+        return {
+            "titulo": spec.get("titulo") or _titulo(pedido),
+            "o_que_fazer": pedido,
+            "patch": (pronto["codigo"].resultado or {}).get("patch") or "",
+            "codigo": pronto["codigo"],
+            "revisor": pronto["revisor"],
+            "rodadas": pronto["rodadas"],
+            "verificacao": pronto["verificacao"],
+        }
+
+    def _laco(
+        self,
+        agente,
+        repo,
+        pedido,
+        restricoes,
+        conteudos,
+        historico,
+        passos,
+        trilha,
+        *,
+        trava: threading.Lock | None = None,
+        arquivos=None,
+        anteriores: str = "",
+        ja_inclui: bool = False,
+        rascunho: dict | None = None,
+    ) -> dict:
+        """Código, verificação e revisor, até aprovar ou acabar o número de voltas.
+
+        A verificação vem antes do revisor: patch que quebra volta ao código com o erro real,
+        sem gastar uma chamada de revisão.
+        """
+        correcoes = None
+        patch_anterior = None
+        rodadas: list[dict] = []
+        while True:
             t_cod = agente.executar(
                 self._codigo(
                     repo,
                     pedido,
                     restricoes,
                     conteudos,
-                    (t_rev.resultado or {}).get("correcoes") or "",
-                    (t_cod.resultado or {}).get("patch") or "",
+                    correcoes,
+                    patch_anterior,
                     historico,
                     arquivos_desta_tarefa=arquivos,
                     patches_anteriores=anteriores,
+                    ja_inclui=ja_inclui,
                 )
             )
             self._anotar(trilha, passos, "codigo", t_cod, trava)
-            t_rev = self.revisor.executar(self._revisor(repo, pedido, t_cod.resultado or {}, restricoes, conteudos))
-            self._anotar(trilha, passos, "revisor", t_rev, trava)
+            resultado = t_cod.resultado or {}
+            verificacao = self._verificar(
+                repo,
+                resultado.get("patch") or "",
+                bool(resultado.get("valido")),
+                restricoes,
+                anteriores,
+                trilha,
+                passos,
+                trava,
+                erro_apply=resultado.get("erro_apply"),
+            )
+            if verificacao is not None and verificacao.get("ok") is False and resultado.get("valido"):
+                t_rev = self._revisor(repo, pedido, resultado, restricoes, conteudos, anteriores)
+                t_rev.resultado = {
+                    "veredito": "pedir_correcoes",
+                    "motivos": ["A verificação automática falhou: " + _titulo(verificacao.get("saida") or "")],
+                    "correcoes": "A verificação automática falhou. Corrija exatamente isto:\n"
+                    + (verificacao.get("saida") or ""),
+                    "origem": "verificador",
+                }
+                t_rev.status = "concluida"
+            else:
+                t_rev = self.revisor.executar(
+                    self._revisor(repo, pedido, resultado, restricoes, conteudos, anteriores)
+                )
+                self._anotar(trilha, passos, "revisor", t_rev, trava)
             rodadas.append(t_rev.resultado or {})
-            ciclos += 1
-        return {
-            "titulo": spec.get("titulo") or _titulo(pedido),
-            "o_que_fazer": pedido,
-            "patch": (t_cod.resultado or {}).get("patch") or "",
-            "codigo": t_cod,
-            "revisor": t_rev,
-            "rodadas": rodadas,
+            if rascunho is not None:
+                rascunho["patch"] = resultado.get("patch") or ""
+                rascunho["revisor"] = t_rev.resultado
+            if (t_rev.resultado or {}).get("veredito") == "aprovar" or len(rodadas) >= self.max_ciclos:
+                break
+            correcoes = (t_rev.resultado or {}).get("correcoes") or ""
+            patch_anterior = resultado.get("patch") or ""
+        return {"codigo": t_cod, "revisor": t_rev, "rodadas": rodadas, "verificacao": verificacao}
+
+    def _verificar(
+        self, repo, patch: str, valido: bool, restricoes, anteriores: str, trilha, passos, trava, erro_apply=None
+    ) -> dict | None:
+        """None quando não há verificador montado. Patch que nem aplica já sai reprovado, sem rodar nada."""
+        if self.verificador is None:
+            return None
+        if not valido or not patch.strip():
+            return {
+                "ok": False,
+                "etapas": [{"nome": "aplicar", "ok": False, "detalhe": erro_apply or "O patch não aplica."}],
+                "saida": "aplicar: " + (erro_apply or "O patch não aplica."),
+            }
+        resultado = self.verificador.verificar(
+            repo,
+            _juntar([anteriores, patch]),
+            proibidos=list((restricoes or {}).get("nao_tocar_caminhos") or []),
+        )
+        passo = {
+            "id": novo_id(),
+            "destinatario": "verificador",
+            "tipo": "executar",
+            "o_que_fazer": "Aplicar o patch numa cópia e conferir caminhos, sintaxe e o comando do repositório.",
+            "status": "concluida" if resultado.get("ok") else "falhou",
         }
+        if trava is None:
+            trilha.append("verificador")
+            passos.append(passo)
+        else:
+            with trava:
+                trilha.append("verificador")
+                passos.append(passo)
+        return resultado
 
     def _anotar(self, trilha, passos, nome, tarefa, trava) -> None:
         if trava is None:
@@ -530,6 +664,7 @@ class Triagem:
         historico,
         arquivos_desta_tarefa=None,
         patches_anteriores=None,
+        ja_inclui: bool = False,
     ) -> Tarefa:
         entrada = {
             "repo": repo,
@@ -544,6 +679,7 @@ class Triagem:
             entrada["arquivos_desta_tarefa"] = list(arquivos_desta_tarefa)
         if patches_anteriores:
             entrada["patches_anteriores"] = patches_anteriores
+            entrada["conteudos_com_anteriores"] = bool(ja_inclui)
         return Tarefa(
             id=novo_id(),
             destinatario="codigo",
@@ -554,7 +690,7 @@ class Triagem:
             resultado_esperado="Patch unificado aplicável, ainda não aplicado no repositório.",
         )
 
-    def _revisor(self, repo, pedido, resultado_codigo: dict, restricoes, conteudos) -> Tarefa:
+    def _revisor(self, repo, pedido, resultado_codigo: dict, restricoes, conteudos, anteriores: str = "") -> Tarefa:
         return Tarefa(
             id=novo_id(),
             destinatario="revisor",
@@ -569,6 +705,7 @@ class Triagem:
                 "erro_apply": resultado_codigo.get("erro_apply"),
                 "restricoes": restricoes,
                 "conteudos": conteudos,
+                "patches_anteriores": anteriores or "",
             },
             resultado_esperado="Veredito aprovar ou pedir_correcoes.",
         )
@@ -642,7 +779,7 @@ def _juntar(patches: list[str]) -> str:
     return "".join(partes)
 
 
-def _linha(nome, titulo, o_que_fazer, agente, revisor, auditor_fim, rodadas, paralelo) -> dict:
+def _linha(nome, titulo, o_que_fazer, agente, revisor, auditor_fim, rodadas, paralelo, verificacao=None) -> dict:
     resultado = agente.resultado or {}
     return {
         "nome": nome,
@@ -656,6 +793,7 @@ def _linha(nome, titulo, o_que_fazer, agente, revisor, auditor_fim, rodadas, par
         "rodadas": rodadas,
         "auditor_fim": auditor_fim.resultado or {},
         "paralelo": paralelo,
+        "verificacao": verificacao,
     }
 
 

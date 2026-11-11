@@ -1,6 +1,6 @@
 [project]
 name = "fabrica-agentes"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fábrica de agentes: interface para um turno controlado sobre um repositório local."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -10,7 +10,7 @@ dependencies = []
 fabrica = "fabrica.__main__:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.6"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -25,3 +25,11 @@ fabrica = ["ui/index.html"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]
+ignore = ["E501"]

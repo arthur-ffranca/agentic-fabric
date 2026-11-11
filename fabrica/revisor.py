@@ -24,7 +24,7 @@ class Revisor:
         if not patch.strip():
             duros.append("O código não entregou um patch.")
         else:
-            valido, erro, caminhos = checar_patch(repo, patch)
+            valido, erro, caminhos = checar_patch(repo, patch, tarefa.entrada.get("patches_anteriores") or "")
             if not valido:
                 duros.append(erro or "O patch não aplica no worktree.")
             else:

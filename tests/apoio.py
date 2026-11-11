@@ -183,3 +183,56 @@ class LLMScript:
     def papeis(self) -> list[str]:
         with self._lock:
             return [item["sistema"].splitlines()[0] for item in self.chamadas]
+
+
+def diff_de(repo: Path, relativo: str, novo: str) -> str:
+    """Diff de um arquivo contra um conteúdo novo, sem conferir se aplica e sem mexer no disco."""
+    alvo = repo / relativo
+    original = alvo.read_bytes()
+    alvo.write_text(novo, encoding="utf-8")
+    gerado = _git(repo, "diff", "--", relativo).stdout
+    alvo.write_bytes(original)
+    return gerado
+
+
+def llm_roteiro(patch, *, tarefas=None, falha_em=None, atraso=0.0, veredito="aprovar"):
+    """Modelo falso mínimo. patch é um texto ou uma função (numero_da_chamada, usuario) -> texto."""
+    import json
+    import time
+
+    from fabrica.erros import ErroLLM
+
+    estado = {"codigo": 0}
+
+    def responder(sistema, usuario):
+        papel = sistema.splitlines()[0]
+        if atraso and "CODIGO" in papel:
+            time.sleep(atraso)
+        if falha_em and falha_em in papel:
+            raise ErroLLM("O modelo respondeu HTTP 429. limite de taxa")
+        if papel.startswith("PAPEL: TRIAGEM"):
+            return json.dumps(
+                {"tarefas": tarefas or [{"titulo": "tarefa", "o_que_fazer": usuario, "arquivos": ["app.py"]}]}
+            )
+        if papel.startswith("PAPEL: AUDITOR_INICIO"):
+            return json.dumps(
+                {
+                    "resumo_estado": "soma em app.py",
+                    "o_que_ja_funciona": ["soma"],
+                    "nao_tocar": [],
+                    "nao_tocar_caminhos": [],
+                    "riscos": [],
+                }
+            )
+        if papel.startswith("PAPEL: CODIGO"):
+            estado["codigo"] += 1
+            return patch(estado["codigo"], usuario) if callable(patch) else patch
+        if papel.startswith("PAPEL: REVISOR"):
+            return json.dumps({"veredito": veredito, "motivos": ["ok"], "correcoes": ""})
+        if papel.startswith("PAPEL: AUDITOR_FIM"):
+            return json.dumps({"comprometido": False, "relato": "ok"})
+        if papel.startswith("PAPEL: PERFORMANCE"):
+            return json.dumps({"propostas": []})
+        raise AssertionError(papel)
+
+    return LLMScript(responder), estado
