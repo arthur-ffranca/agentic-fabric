@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fábrica de agentes</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,520;9..144,640&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --paper: #f3efe6;
+      --ink: #1f1a16;
+      --muted: #6b6259;
+      --line: #d9d0c3;
+      --card: #fffdf8;
+      --accent: #9a3b2f;
+      --ok: #2c6a4a;
+      --ok-bg: #e6f3ea;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
+    body { font-family: "IBM Plex Sans", sans-serif; font-size: 15px; line-height: 1.5; }
+    header {
+      padding: 28px 40px 20px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 24px;
+    }
+    h1 { font-family: Fraunces, serif; font-weight: 640; font-size: 34px; margin: 0 0 4px; letter-spacing: -0.03em; }
+    .sub { color: var(--muted); margin: 0; font-size: 14px; }
+    .badges { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .badge { border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 6px 12px; font-size: 12px; font-weight: 500; }
+    .badge.ok { background: var(--ok-bg); border-color: #b7d8c3; color: var(--ok); }
+    main { padding: 28px 40px 48px; max-width: 1180px; margin: 0 auto; }
+    .pedido, .resumo, .patch-card, .perf-card, .step, .linha, .aviso {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+    }
+    .pedido { padding: 18px 18px 16px; margin-bottom: 22px; }
+    label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 6px; letter-spacing: 0.04em; text-transform: uppercase; }
+    textarea, input[type="text"] {
+      width: 100%; border: 1px solid var(--line); background: #fff; color: var(--ink);
+      border-radius: 10px; padding: 10px 12px; font: inherit; outline: none;
+    }
+    textarea { min-height: 72px; resize: vertical; }
+    .row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: end; margin-top: 12px; }
+    .botoes { display: flex; gap: 8px; flex-wrap: wrap; }
+    button {
+      font: inherit; font-weight: 600; border: 0; cursor: pointer;
+      background: var(--accent); color: #fff; border-radius: 10px;
+      padding: 11px 16px; white-space: nowrap;
+    }
+    button:hover { filter: brightness(1.05); }
+    button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+    button:disabled { opacity: 0.55; cursor: default; filter: none; }
+    h2 { font-family: Fraunces, serif; font-size: 20px; font-weight: 520; margin: 0 0 12px; }
+    .voltas-wrap { margin-bottom: 22px; }
+    .voltas { display: flex; gap: 10px; flex-wrap: wrap; }
+    .volta {
+      font: inherit; text-align: left; color: var(--ink);
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 14px; padding: 10px 14px; min-width: 180px; max-width: 260px;
+    }
+    .volta.ativa { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+    .volta .n { display: block; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin-bottom: 2px; }
+    .volta .t { display: block; font-size: 13.5px; font-weight: 500; }
+    .inicio { margin-bottom: 16px; }
+    .linhas { display: grid; gap: 16px; margin-bottom: 16px; }
+    .linhas.uma { grid-template-columns: 1fr; }
+    .linhas.duas { grid-template-columns: 1fr 1fr; }
+    .linha { border-radius: 14px; padding: 16px; }
+    .linha h2 { margin-bottom: 4px; }
+    .linha .escopo { margin: 0 0 12px; }
+    .cadeia { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+    .step { border-radius: 14px; padding: 14px 14px 12px; }
+    .linha .step { background: #fff; }
+    .step .who { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin: 0 0 4px; }
+    .step h3 { margin: 0 0 8px; font-size: 15px; font-weight: 600; }
+    .step p, .step li { margin: 0; font-size: 13.5px; }
+    .step ul { margin: 0; padding-left: 18px; }
+    .step li { margin: 2px 0; }
+    .stamp { display: inline-block; font-size: 11px; font-weight: 600; border-radius: 999px; padding: 3px 8px; margin-bottom: 8px; background: #f6efe8; color: var(--accent); }
+    .stamp.ok { background: var(--ok-bg); color: var(--ok); }
+    .perf-card, .resumo, .aviso { border-radius: 14px; padding: 16px; margin-bottom: 16px; }
+    .acoes { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+    pre {
+      margin: 0; overflow: auto; max-height: 280px; font-family: "IBM Plex Mono", monospace;
+      font-size: 12px; line-height: 1.45; background: #1f1a16; color: #f3efe6;
+      border-radius: 10px; padding: 14px 16px;
+    }
+    .add { color: #b6e2c4; }
+    .del { color: #f3b3a9; }
+    .meta { color: #b9b0a6; }
+    .ctx { color: #f3efe6; }
+    .tarefas { display: grid; gap: 10px; }
+    .tarefa { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: #fff; }
+    .tarefa h3 { margin: 0 0 4px; font-size: 14px; }
+    .tarefa p { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+    .resumo p { margin: 0; }
+    .erro { color: var(--accent); font-size: 13px; margin-top: 8px; }
+    .patch-meta { margin: 0 0 8px; }
+    .caso { margin-top: 8px; }
+    body.ocupado { cursor: progress; }
+    @media (max-width: 900px) {
+      .linhas.duas, .row { grid-template-columns: 1fr; }
+      header, main { padding-left: 20px; padding-right: 20px; }
+      header { flex-direction: column; align-items: flex-start; }
+      .badges { justify-content: flex-start; }
+      h1 { font-size: 28px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Fábrica de agentes</h1>
+      <p class="sub">Dois agentes de código, cada um numa tarefa independente.</p>
+    </div>
+    <div class="badges" id="badges"></div>
+  </header>
+  <main>
+    <form class="pedido" id="form">
+      <label for="fala">Pedido</label>
+      <textarea id="fala" name="fala" placeholder="O que deve mudar, e em qual arquivo."></textarea>
+      <div class="row">
+        <div>
+          <label for="repo">Repositório alvo</label>
+          <input id="repo" name="repo" type="text" placeholder="/caminho/do/repositorio" spellcheck="false" />
+        </div>
+        <div class="botoes">
+          <button type="button" class="ghost" id="novo" hidden>Novo caso</button>
+          <button type="submit" id="rodar">Rodar turno</button>
+        </div>
+      </div>
+      <p class="sub caso" id="caso" hidden></p>
+      <div class="erro" id="erro" hidden></div>
+    </form>
+    <div class="aviso" id="pergunta" hidden></div>
+    <section class="voltas-wrap" id="voltas-wrap" hidden>
+      <h2>Voltas do caso</h2>
+      <div class="voltas" id="voltas"></div>
+    </section>
+    <div class="resumo" id="resumo" hidden></div>
+    <div id="resultado" hidden>
+      <div class="inicio" id="inicio"></div>
+      <div class="linhas" id="linhas"></div>
+      <div class="perf-card">
+        <h2>Performance, em paralelo</h2>
+        <p class="sub" style="margin-bottom:12px">Isto não entra no patch. Se você escolher, a cadeia roda de novo nesta tela, como a próxima volta. Uma proposta por vez.</p>
+        <div class="tarefas" id="tarefas"></div>
+      </div>
+    </div>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+    let estado = { caso_id: null, atual: null, historico: [], pergunta: null, repo: "" };
+    let vista = null;
+
+    function colorize(patch) {
+      return esc(patch).split("\n").map((line) => {
+        if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@")) return `<span class="meta">${line}</span>`;
+        if (line.startsWith("+")) return `<span class="add">${line}</span>`;
+        if (line.startsWith("-")) return `<span class="del">${line}</span>`;
+        return `<span class="ctx">${line}</span>`;
+      }).join("\n");
+    }
+
+    function pintarVoltas() {
+      const lista = estado.historico || [];
+      $("voltas-wrap").hidden = lista.length === 0;
+      $("voltas").innerHTML = lista.map((t) => {
+        const ativa = vista && t.volta === vista.volta;
+        return `<button type="button" class="volta${ativa ? " ativa" : ""}" data-volta="${t.volta}">
+          <span class="n">Volta ${t.volta} · ${esc(t.quando || "")}</span>
+          <span class="t">${esc(t.titulo || "turno")}</span>
+        </button>`;
+      }).join("");
+      $("voltas").querySelectorAll("button").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const t = lista.find((x) => String(x.volta) === btn.dataset.volta);
+          if (t) mostrar(t);
+        });
+      });
+    }
+
+    function cardPasso(who, titulo, corpo, stamp) {
+      return `<article class="step">
+        <p class="who">${esc(who)}</p>
+        ${stamp || ""}
+        ${titulo ? `<h3>${titulo}</h3>` : ""}
+        ${corpo}
+      </article>`;
+    }
+
+    function selos(data) {
+      const linhas = data.linhas || [];
+      const commit = data.commit ? String(data.commit).slice(0, 7) : "";
+      let aplicado = "Nada aplicado";
+      if (data.commitado) aplicado = "Aplicado e commitado";
+      else if (data.aplicado) aplicado = "Aplicado no repo";
+      const arvore = data.commitado
+        ? (data.repo_limpo ? "Working tree limpo" : "Repo com mudanças")
+        : (data.repo_limpo ? "Repo limpo" : "Repo com mudanças");
+      return `<span class="badge ok">${esc(aplicado)}</span>` +
+        (commit ? `<span class="badge">${esc(commit)}</span>` : "") +
+        `<span class="badge ${data.repo_limpo ? "ok" : ""}">${esc(arvore)}</span>` +
+        `<span class="badge ${data.aprovado ? "ok" : ""}">${data.aprovado ? "Cadeia aprovada" : "Reparo pendente"}</span>` +
+        `<span class="badge">Volta ${data.volta || 1}</span>` +
+        (linhas.length > 1 ? `<span class="badge">${data.paralelo ? "2 tarefas independentes" : "2 tarefas no mesmo arquivo"}</span>` : "");
+    }
+
+    function acoes(data) {
+      if (!data.eh_ultima) return "";
+      const aplicar = `<button type="button" id="aplicar" ${data.pode_aplicar ? "" : "disabled"}>Aplicar</button>`;
+      const commit = `<button type="button" class="ghost" id="commitar" ${data.pode_commitar ? "" : "disabled"}>Commit</button>`;
+      const motivo = !data.pode_aplicar && !data.aplicado
+        ? data.motivo_aplicar
+        : (!data.pode_commitar && data.aplicado && !data.commitado ? data.motivo_commit : "");
+      return `<div class="acoes">${aplicar}${commit}</div>` +
+        (motivo ? `<p class="sub" style="margin-top:8px">${esc(motivo)}</p>` : "");
+    }
+
+    function mostrar(data) {
+      vista = data;
+      const linhas = data.linhas || [];
+      if (data.pedido) $("fala").value = data.pedido;
+      if (data.repo) $("repo").value = data.repo;
+      $("badges").innerHTML = selos(data);
+      $("novo").hidden = !estado.caso_id;
+      $("caso").hidden = !estado.caso_id;
+      $("caso").textContent = estado.caso_id ? `Caso ${estado.caso_id}` : "";
+      $("resumo").hidden = false;
+      $("resumo").innerHTML = `<p>${esc(data.resumo || "")}</p>${acoes(data)}`;
+      const btnAplicar = $("aplicar");
+      const btnCommit = $("commitar");
+      if (btnAplicar) btnAplicar.addEventListener("click", () => aplicar());
+      if (btnCommit) btnCommit.addEventListener("click", () => commitar());
+      $("resultado").hidden = linhas.length === 0;
+      if (!linhas.length) {
+        pintarVoltas();
+        return;
+      }
+      const restricoes = (data.auditor_inicio && data.auditor_inicio.resultado && data.auditor_inicio.resultado.restricoes) || [];
+      const tituloTriagem = linhas.length > 1
+        ? (data.paralelo ? "Pedido claro, duas tarefas independentes" : "Pedido claro, duas tarefas no mesmo arquivo")
+        : "Pedido claro, sem pergunta";
+      const textoTriagem = linhas.length > 1
+        ? (data.paralelo
+          ? "A triagem despacha dois agentes de código, cada um numa tarefa independente. O de performance corre em paralelo."
+          : "As duas tarefas tocam o mesmo arquivo, então uma espera a outra. O de performance corre em paralelo.")
+        : "A triagem despacha o auditor, depois o código desta tarefa. O de performance corre em paralelo.";
+      $("inicio").innerHTML = `
+        <h2>Cadeia de entrega</h2>
+        ${cardPasso("Orquestrador — triagem", tituloTriagem, `<p>${textoTriagem}</p>`)}
+        ${cardPasso("Auditor · início", "Leu o repositório uma vez",
+          `<ul>${restricoes.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>`)}`;
+      const caixa = $("linhas");
+      caixa.className = "linhas " + (linhas.length > 1 ? "duas" : "uma");
+      caixa.innerHTML = linhas.map((linha) => {
+        const rev = linha.revisor.resultado;
+        const a2 = linha.auditor_fim.resultado;
+        const aprovado = rev.veredito === "aprovar";
+        const stampRev = `<div class="stamp ${aprovado ? "ok" : ""}">${aprovado ? "Aprovado" : "Pedir correção"}</div>`;
+        const stampAud = `<div class="stamp ${a2.comprometeu_algo ? "" : "ok"}">${a2.comprometeu_algo ? "Há compromisso" : "Nada comprometido"}</div>`;
+        const arquivos = (linha.codigo.resultado.arquivos_tocados || []).join(", ");
+        const pontos = (rev.pontos || []).map((p) => `<li>${esc(p)}</li>`).join("") || "<li>Sem ponto registrado.</li>";
+        return `<section class="linha">
+          <h2>${esc(linha.nome)}</h2>
+          <p class="sub escopo">Tarefa: ${esc(linha.o_que_cuida || linha.titulo)}</p>
+          <div class="cadeia">
+            ${cardPasso("Código", "Devolveu o patch de " + esc(linha.titulo), `<p>Arquivos: ${esc(arquivos || "(nenhum)")}</p>`)}
+            ${cardPasso("Revisor", "", `<ul>${pontos}</ul>`, stampRev)}
+            ${cardPasso("Auditor · fim", "", `<p>${esc(a2.parecer || "")}</p>`, stampAud)}
+          </div>
+          <p class="sub patch-meta">${esc(arquivos || "patch")} · ${linha.codigo.resultado.aplicado_no_repo ? "aplicado" : "não aplicado"}</p>
+          <pre>${colorize(linha.codigo.resultado.patch || "")}</pre>
+        </section>`;
+      }).join("");
+      const propostas = (data.performance && data.performance.resultado && data.performance.resultado.propostas) || [];
+      $("tarefas").innerHTML = propostas.map((p) => `
+        <div class="tarefa">
+          <h3>${esc(p.o_que_fazer)}</h3>
+          <p>${esc(p.onde)} · ${esc(p.o_que_melhora)}</p>
+          <button class="ghost" type="button" data-proposta="${esc(p.id || "")}" ${data.eh_ultima ? "" : "disabled"}>Rodar esta tarefa</button>
+        </div>`).join("") || `<p class="sub">Não há outra proposta nesta volta.</p>`;
+      $("tarefas").querySelectorAll("button").forEach((btn) => {
+        btn.addEventListener("click", () => aceitar(btn.dataset.proposta));
+      });
+      pintarVoltas();
+    }
+
+    function mostrarPergunta() {
+      const texto = estado.pergunta;
+      $("pergunta").hidden = !texto;
+      $("pergunta").innerHTML = texto
+        ? `<p class="who" style="font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin:0 0 6px">Pergunta em aberto</p><p>${esc(texto)}</p>`
+        : "";
+    }
+
+    function aplicarEstado(data, focarAtual) {
+      estado = data || estado;
+      mostrarPergunta();
+      if (!estado.atual) {
+        vista = null;
+        $("badges").innerHTML = "";
+        $("resumo").hidden = true;
+        $("resultado").hidden = true;
+        $("voltas-wrap").hidden = true;
+        $("novo").hidden = !estado.caso_id;
+        if (estado.repo) $("repo").value = estado.repo;
+        return;
+      }
+      const alvo = (focarAtual || !vista)
+        ? estado.atual
+        : ((estado.historico || []).find((t) => t.volta === vista.volta) || estado.atual);
+      mostrar(alvo);
+    }
+
+    async function chamar(url, payload, rotulo) {
+      $("erro").hidden = true;
+      document.body.classList.add("ocupado");
+      $("rodar").disabled = true;
+      const anterior = $("rodar").textContent;
+      if (rotulo) $("rodar").textContent = rotulo;
+      try {
+        const r = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.erro || "A fábrica não completou o passo.");
+        aplicarEstado(data, true);
+      } catch (e) {
+        $("erro").hidden = false;
+        $("erro").textContent = e.message;
+      } finally {
+        $("rodar").disabled = false;
+        $("rodar").textContent = anterior || "Rodar turno";
+        document.body.classList.remove("ocupado");
+      }
+    }
+
+    function rodar(fala, repo) {
+      return chamar("/api/turno", { pedido: fala, repo, caso_id: estado.caso_id || null }, "Rodando…");
+    }
+
+    function aplicar() {
+      return chamar("/api/aplicar", { caso_id: estado.caso_id }, "Aplicando…");
+    }
+
+    function commitar() {
+      return chamar("/api/commit", { caso_id: estado.caso_id }, "Commitando…");
+    }
+
+    function aceitar(propostaId) {
+      if (!propostaId) return;
+      return chamar("/api/aceitar", { caso_id: estado.caso_id, proposta_id: propostaId }, "Rodando…");
+    }
+
+    $("form").addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      rodar($("fala").value, $("repo").value);
+    });
+
+    $("novo").addEventListener("click", () => {
+      estado = { caso_id: null, atual: null, historico: [], pergunta: null, repo: $("repo").value };
+      $("fala").value = "";
+      $("erro").hidden = true;
+      aplicarEstado(estado, true);
+    });
+
+    fetch("/api/estado")
+      .then((r) => r.json())
+      .then((data) => aplicarEstado(data, true))
+      .catch((e) => {
+        $("erro").hidden = false;
+        $("erro").textContent = e.message;
+      });
+  </script>
+</body>
+</html>
